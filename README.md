@@ -7,8 +7,20 @@
 
 Whether you shoot Sony RAWs or have terabytes of family memories, Praetorian keeps everything local, fast, and under your control. No subscriptions. No tracking. Just your photos.
 
+## Build and run commands
+
+- `npm install` to install the frontend dependencies.
+- `npm run dev` to start Vite in development.
+- `npm run build` to build the frontend (`tsc && vite build`).
+- `npm run tauri` to run the Tauri app.
+- `npm run tauri build` to build the desktop application in `src-tauri/target/release`.
+
+ ### Tests
+- `npx playwright test --reporter=html` to run the headless ui tests.
+- `npx playwright show-report` to show the results of the test.
+
 ---
-Lu
+
 ## Why Praetorian?
 
 Modern photo management has drifted toward the cloud. While convenient, services like Google Photos and Adobe Lightroom Cloud require constant internet access, push expensive subscriptions, or lock your data into proprietary catalogs.

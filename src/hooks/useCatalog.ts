@@ -489,3 +489,6 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
     }
   },
 }));
+
+// Expose store on window for Playwright E2E testing
+;(window as any).__CATALOG_STORE__ = useCatalogStore;

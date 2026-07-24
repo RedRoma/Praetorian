@@ -3535,6 +3535,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-log",
+ "tauri-plugin-playwright",
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "thiserror 2.0.19",
@@ -5281,6 +5282,19 @@ dependencies = [
  "tauri-plugin",
  "thiserror 2.0.19",
  "time",
+]
+
+[[package]]
+name = "tauri-plugin-playwright"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d04b8c07b9f1f1766baa279fdf65f4a0e59634e9c15cbe3093e7554b53e6bf"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tokio",
 ]
 
 [[package]]
