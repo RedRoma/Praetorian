@@ -49,6 +49,7 @@ ort-sys = { version = "2.0.0-rc.12", optional = true }
 # --- UUID for hashed cache keys ---
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+base64 = "0.22"
 
 # --- Filesystem / path utilities ---
 walkdir = "2"
