@@ -139,6 +139,30 @@ async fn get_thumbnail_path(
     Ok(path)
 }
 
+/// Returns the thumbnail image as a base64 data URL for direct browser display.
+#[tauri::command]
+async fn get_thumbnail_data(
+    image_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let path = {
+        let guard = state.catalog.lock().await;
+        let catalog = guard
+            .as_ref()
+            .ok_or_else(|| "No catalog open".to_string())?;
+
+        catalog.get_thumbnail_path(image_id)
+    };
+
+    if !path.exists() {
+        return Ok(String::new());
+    }
+
+    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
+    Ok(format!("data:image/jpeg;base64,{}", base64))
+}
+
 /// Returns the filesystem path to a smart preview for a given image.
 #[tauri::command]
 async fn get_preview_path(
@@ -790,6 +814,7 @@ pub fn run() {
             count_images,
             list_folders,
             get_thumbnail_path,
+            get_thumbnail_data,
             get_preview_path,
             start_face_index,
             upscale_image,
