@@ -467,9 +467,14 @@ impl CatalogManager {
             anyhow::bail!("Directory does not exist: {}", dir_path);
         }
 
+        log::info!("Importing directory: {}", dir_path);
+
         let folder_id = Self::ensure_folder_static(dir_path, pool).await?;
+        log::info!("Folder ID: {}", folder_id);
 
         let mut imported = 0usize;
+        let mut queued = 0usize;
+        let mut checked = 0usize;
         let mut queue = vec![dir.to_path_buf()];
 
         while let Some(current_dir) = queue.pop() {
@@ -477,6 +482,7 @@ impl CatalogManager {
                 if entry.file_type().is_dir() {
                     if entry.file_name() != ".praetorian" {
                         queue.push(entry.path().to_path_buf());
+                        queued += 1;
                     }
                     continue;
                 }
@@ -492,6 +498,7 @@ impl CatalogManager {
                     continue;
                 }
 
+                checked += 1;
                 let file_path = entry.path().to_string_lossy().to_string();
 
                 let exists: bool = sqlx::query_scalar(
@@ -509,6 +516,7 @@ impl CatalogManager {
                     continue;
                 }
 
+                log::info!("Importing: {}", file_path);
                 match Self::import_single_image_static(&file_path, folder_id, pool).await {
                     Ok(_) => imported += 1,
                     Err(e) => {
@@ -517,6 +525,13 @@ impl CatalogManager {
                 }
             }
         }
+
+        log::info!(
+            "Import complete: {} images imported, {} files checked, {} subdirs queued",
+            imported,
+            checked,
+            queued
+        );
 
         Ok(imported)
     }

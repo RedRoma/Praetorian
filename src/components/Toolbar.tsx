@@ -24,6 +24,16 @@ const Toolbar: React.FC = () => {
     }
   };
 
+  const handleImport = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+    });
+    if (selected && typeof selected === "string") {
+      await useCatalogStore.getState().importDirectory(selected);
+    }
+  };
+
   return (
     <div className="h-10 bg-[#1a1a1a] border-b border-[#2a2a2a] flex items-center px-3 gap-1 shrink-0 select-none">
       {/* Logo */}
@@ -63,7 +73,10 @@ const Toolbar: React.FC = () => {
             {rightPanelVisible ? "Hide" : "Show"} Details
           </button>
           <div className="w-px h-5 bg-[#2a2a2a] mx-1" />
-          <button className="px-3 py-1 text-[12px] bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium">
+          <button
+            className="px-3 py-1 text-[12px] bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium"
+            onClick={handleImport}
+          >
             Import
           </button>
         </>
