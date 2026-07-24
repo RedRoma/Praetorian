@@ -55,6 +55,9 @@ base64 = "0.22"
 walkdir = "2"
 notify = "7"
 
+# --- Concurrency helpers ---
+num_cpus = "1"
+
 # --- Error handling ---
 thiserror = "2"
 anyhow = "1"

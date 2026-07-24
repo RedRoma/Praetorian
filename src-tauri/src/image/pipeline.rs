@@ -18,11 +18,14 @@ const THUMB_QUALITY: u8 = 75;
 /// JPEG quality for smart previews.
 const PREVIEW_QUALITY: u8 = 85;
 
-/// Maximum concurrent image processing tasks.
-const MAX_CONCURRENT_TASKS: usize = 4;
+/// Short timeout for batching channel jobs before processing them in parallel.
+const CHANNEL_BATCH_TIMEOUT_MS: u64 = 50;
 
-/// How often the worker polls the DB queue when the channel is empty (ms).
-const DB_POLL_INTERVAL_MS: u64 = 200;
+/// Returns the dynamic concurrency limit based on available CPU cores.
+/// Operations are I/O-bound, so using all cores is safe and beneficial.
+fn max_concurrent_tasks() -> usize {
+    num_cpus::get()
+}
 
 /// Represents a queued image processing job.
 #[derive(Debug, Clone)]
@@ -122,26 +125,37 @@ impl ImagePipeline {
         cache_dir: PathBuf,
         pool: SqlitePool,
     ) {
-        log::info!("Worker loop started, cache_dir={}", cache_dir.display());
+        log::info!("Worker loop started, cache_dir={}, max_concurrent={}", cache_dir.display(), max_concurrent_tasks());
 
         loop {
-            // Phase 1: drain channel jobs with timeout
-            match tokio::time::timeout(
-                tokio::time::Duration::from_millis(DB_POLL_INTERVAL_MS),
-                receiver.recv(),
-            )
-            .await {
-                Ok(Some(job)) => {
-                    Self::process_job(job, &cache_dir, &pool).await;
-                    continue;
+            // Phase 1: batch channel jobs with short timeout, then process in parallel
+            let mut batch = Vec::new();
+            let mut channel_closed = false;
+
+            loop {
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_millis(CHANNEL_BATCH_TIMEOUT_MS),
+                    receiver.recv(),
+                )
+                .await {
+                    Ok(Some(job)) => batch.push(job),
+                    Ok(None) => {
+                        channel_closed = true;
+                        break;
+                    }
+                    Err(_) => {
+                        // Timeout reached — process collected batch in parallel
+                        break;
+                    }
                 }
-                Ok(None) => {
-                    // Channel closed
-                    break;
-                }
-                Err(_) => {
-                    // Timeout — poll DB for persisted jobs
-                }
+            }
+
+            if !batch.is_empty() {
+                Self::process_batch(batch, &cache_dir, &pool).await;
+            }
+
+            if channel_closed {
+                break;
             }
 
             // Phase 2: poll DB queue for pending jobs
@@ -153,8 +167,25 @@ impl ImagePipeline {
         log::info!("Worker loop exited (channel closed)");
     }
 
+    /// Processes a batch of jobs in parallel.
+    async fn process_batch(jobs: Vec<ProcessingJob>, cache_dir: &Path, pool: &SqlitePool) {
+        let mut handles = Vec::new();
+        for job in jobs {
+            let cd = cache_dir.to_path_buf();
+            let p = pool.clone();
+            let handle = tokio::spawn(async move {
+                Self::process_job(job, &cd, &p).await;
+            });
+            handles.push(handle);
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
     /// Polls the `processing_queue` table for pending jobs and processes them.
     async fn drain_db_queue(cache_dir: &Path, pool: &SqlitePool) -> Result<()> {
+        let limit = max_concurrent_tasks();
         let pending: Vec<(i64, i64, String, String)> = sqlx::query_as(
             r#"
             SELECT pq.id, 
@@ -169,7 +200,7 @@ impl ImagePipeline {
             LIMIT ?
             "#,
         )
-        .bind(MAX_CONCURRENT_TASKS as i64)
+        .bind(limit as i64)
         .fetch_all(pool)
         .await?;
 
@@ -404,26 +435,34 @@ impl ImagePipeline {
 
     /// Resizes an image to the given max dimension and saves as JPEG.
     /// Uses libvips when the `vips` feature is enabled, otherwise falls back to `image`.
-    /// If the primary method fails, tries the other as a fallback for corrupted files.
+    /// If the primary method fails, tries multiple fallback strategies for corrupted files.
     fn resize_and_save(
         input: &str,
         output: &Path,
         max_dim: u32,
         quality: u8,
     ) -> Result<()> {
+        // Strategy 1: Try libvips (most robust, supports RAW)
         #[cfg(feature = "vips")]
         {
-            if let Err(e) = Self::resize_with_vips(input, output, max_dim, quality) {
-                log::warn!("vips resize failed for {}, falling back to image crate: {}", input, e);
-                return Self::resize_with_image(input, output, max_dim, quality);
+            if let Ok(()) = Self::resize_with_vips(input, output, max_dim, quality) {
+                return Ok(());
             }
+            log::debug!("vips resize failed for {}, trying fallback strategies", input);
+        }
+
+        // Strategy 2: Try image crate with auto-detection
+        if let Ok(()) = Self::resize_with_image(input, output, max_dim, quality) {
             return Ok(());
         }
 
-        #[cfg(not(feature = "vips"))]
-        {
-            return Self::resize_with_image(input, output, max_dim, quality);
+        // Strategy 3: Try reading raw bytes and forcing JPEG decode (handles corrupted headers)
+        if let Ok(()) = Self::resize_with_fallback_decode(input, output, max_dim, quality) {
+            return Ok(());
         }
+
+        // All strategies failed
+        anyhow::bail!("All image decoding strategies failed for {}", input);
     }
 
     /// Resize using libvips (fast, supports RAW via built-in loaders).
@@ -476,17 +515,65 @@ impl ImagePipeline {
     }
 
     /// Resize using the `image` crate (slower, no RAW support).
-    #[cfg(not(feature = "vips"))]
     fn resize_with_image(
         input: &str,
         output: &Path,
         max_dim: u32,
         quality: u8,
     ) -> Result<()> {
-        use image::codecs::jpeg::JpegEncoder;
-        use image::{ExtendedColorType, GenericImageView, ImageEncoder, ImageReader};
+        use image::ImageReader;
 
         let img = ImageReader::open(input)?.decode()?;
+        Self::resize_image_impl(img, output, max_dim, quality)
+    }
+
+    /// Fallback: read raw bytes and try to decode as JPEG with error recovery.
+    fn resize_with_fallback_decode(
+        input: &str,
+        output: &Path,
+        max_dim: u32,
+        quality: u8,
+    ) -> Result<()> {
+        let data = std::fs::read(input)?;
+        if data.is_empty() {
+            return Err(anyhow::anyhow!("File is empty"));
+        }
+
+        // Try to find JPEG start marker (0xFFD8) and decode from there
+        if let Some(pos) = Self::find_jpeg_start(&data) {
+            log::debug!("Found JPEG start marker at offset {} for {}", pos, input);
+            let img = image::load_from_memory(&data[pos..])?;
+            return Self::resize_image_impl(img, output, max_dim, quality);
+        }
+
+        // Try decoding with auto format detection on raw bytes
+        let img = image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg)?;
+        Self::resize_image_impl(img, output, max_dim, quality)
+    }
+
+    /// Finds the JPEG SOI marker (0xFFD8) in the data.
+    fn find_jpeg_start(data: &[u8]) -> Option<usize> {
+        if data.len() < 2 {
+            return None;
+        }
+        for i in 0..data.len() - 1 {
+            if data[i] == 0xFF && data[i + 1] == 0xD8 {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Common implementation for resizing a decoded image.
+    fn resize_image_impl(
+        img: image::DynamicImage,
+        output: &Path,
+        max_dim: u32,
+        quality: u8,
+    ) -> Result<()> {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ExtendedColorType, GenericImageView, ImageEncoder};
+
         let (w, h) = img.dimensions();
 
         let scale = if w > h {

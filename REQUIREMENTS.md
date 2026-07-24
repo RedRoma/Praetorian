@@ -26,13 +26,19 @@ To ensure the UI remains snappy with large libraries, images are processed in th
 2.  **Smart Preview:** A high-quality, medium-resolution JPEG (e.g., 2048px) generated in the background. This is used for the single-image view.
 3.  **Full Resolution:** Loaded on-demand only when the user zooms in deeply.
 
-### C. Face Recognition
+### C. Robust Image Handling
+As a photography application, Praetorian must be able to display virtually any photo file. The image pipeline prioritizes showing images over perfect decoding:
+*   **Multi-strategy decoding:** If the primary decoder fails (e.g., corrupted headers, unusual formats), the system automatically tries multiple fallback strategies before marking an image as unreadable.
+*   **Graceful degradation:** Images with minor corruption should still be displayed if possible. Only completely unreadable files should fail.
+*   **Wide format support:** The pipeline must handle standard formats (JPEG, PNG, TIFF, WebP) and RAW formats via libvips.
+
+### D. Face Recognition
 *   **Detection:** Background worker scans the library for faces using the **RetinaFace** model via ONNX.
 *   **GPU Acceleration:** Must utilize Nvidia/AMD GPUs if available via CUDA execution providers.
 *   **Organization:** Users can group detected faces and assign them names (e.g., "Sarah", "John").
 *   **Search:** A search interface to query photos by person.
 
-### D. AI Upscaling (Python Bridge)
+### E. AI Upscaling (Python Bridge)
 *   **Integration:** A Rust-to-Python bridge that spawns a subprocess to run external AI upscaling scripts (e.g., Real-ESRGAN).
 *   **Workflow:** User selects image and desired image size -> Rust spawns Python script -> Script processes image -> Rust updates UI with success status.
 
