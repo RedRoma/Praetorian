@@ -12,7 +12,10 @@ pub struct Database {
 impl Database {
     /// Opens an existing `.praetorian` catalog or creates a new one.
     pub async fn open_or_create(path: &str) -> Result<Self, sqlx::Error> {
-        let dsn = format!("sqlite:{}", path);
+        // Normalize to forward slashes for cross-platform DSN compatibility (sqlx on Windows requires them).
+        let normalized = path.replace('\\', "/");
+        let dsn = format!("sqlite:{}", normalized);
+        log::info!("Connecting to SQLite DSN: {}", dsn);
         let pool = SqlitePool::connect(&dsn).await?;
 
         // Enable WAL mode for better concurrent read/write performance
