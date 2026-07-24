@@ -8,7 +8,6 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:default",
-    "shell:default",
-    "playwright:default"
+    "shell:default"
   ]
 }

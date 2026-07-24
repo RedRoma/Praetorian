@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegram/tauri/v2.0.0/tooling/cli/src/helpers/json-schemas/capabilities.json",
+  "identifier": "e2e-testing",
+  "description": "E2E testing capabilities - only loaded with --features e2e-testing",
+  "windows": ["main"],
+  "permissions": [
+    "playwright:default"
+  ]
+}
