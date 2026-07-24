@@ -3,6 +3,8 @@ use sqlx::SqlitePool;
 /// Runs all database migrations against the pool.
 /// Each migration is a named SQL block. Order matters.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    log::info!("Running migrations...");
+
     // Create a tracking table for applied migrations
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS _migrations (
@@ -12,7 +14,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         );",
     )
     .execute(pool)
-    .await?;
+    .await
+    .map_err(|e| {
+        log::error!("Failed to create _migrations table: {}", e);
+        e
+    })?;
 
     let migrations: &[(&str, &str)] = &[
         (
@@ -30,11 +36,18 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .await?;
 
         if !exists {
-            sqlx::query(sql).execute(pool).await?;
+            log::info!("Applying migration: {}", name);
+            sqlx::query(sql).execute(pool).await.map_err(|e| {
+                log::error!("Migration {} failed: {}", name, e);
+                e
+            })?;
             sqlx::query("INSERT INTO _migrations (name) VALUES (?)")
                 .bind(name)
                 .execute(pool)
                 .await?;
+            log::info!("Migration {} applied", name);
+        } else {
+            log::info!("Migration {} already applied, skipping", name);
         }
     }
 

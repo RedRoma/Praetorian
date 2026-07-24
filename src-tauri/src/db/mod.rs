@@ -1,6 +1,7 @@
 pub mod schema;
 pub mod migrations;
 
+use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 use migrations::run_migrations;
 
@@ -12,24 +13,49 @@ pub struct Database {
 impl Database {
     /// Opens an existing `.praetorian` catalog or creates a new one.
     pub async fn open_or_create(path: &str) -> Result<Self, sqlx::Error> {
-        // Normalize to forward slashes for cross-platform DSN compatibility (sqlx on Windows requires them).
-        let normalized = path.replace('\\', "/");
-        let dsn = format!("sqlite:{}", normalized);
-        log::info!("Connecting to SQLite DSN: {}", dsn);
-        let pool = SqlitePool::connect(&dsn).await?;
+        // Ensure parent directory exists
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            log::info!("Ensuring parent dir exists: {}", parent.display());
+            if !parent.exists() {
+                log::info!("Creating parent dir: {}", parent.display());
+                std::fs::create_dir_all(parent).expect("Failed to create parent directory");
+            }
+        }
 
-        // Enable WAL mode for better concurrent read/write performance
-        sqlx::query("PRAGMA journal_mode = WAL;")
-            .execute(&pool)
-            .await?;
-        sqlx::query("PRAGMA foreign_keys = ON;")
-            .execute(&pool)
-            .await?;
+        // Build connection options with explicit settings for Windows compatibility.
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .foreign_keys(true);
+
+        log::info!("Connecting to SQLite: {}", path);
+
+        // Connect with a single-connection pool to avoid race conditions during file creation on Windows.
+        let pool = sqlx::pool::PoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(|e| {
+                log::error!("SQLite connect failed: {}", e);
+                e
+            })?;
+        log::info!("SQLite connection established");
+
+        // Set cache size after connection
         sqlx::query("PRAGMA cache_size = -64000;") // 64MB cache
             .execute(&pool)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!("PRAGMA cache_size failed: {}", e);
+                e
+            })?;
 
-        run_migrations(&pool).await?;
+        run_migrations(&pool).await.map_err(|e| {
+            log::error!("Migrations failed: {}", e);
+            e
+        })?;
+        log::info!("Migrations applied successfully");
 
         Ok(Self { pool })
     }
