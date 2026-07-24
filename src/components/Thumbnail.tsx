@@ -1,5 +1,6 @@
-import { memo } from "react";
+import { memo, useState, useEffect } from "react";
 import { ImageRecord } from "@/types";
+import { getThumbnailData } from "@/services/catalog";
 
 interface ThumbnailProps {
   image: ImageRecord;
@@ -8,6 +9,34 @@ interface ThumbnailProps {
 }
 
 const Thumbnail = memo(({ image, isSelected, onSelect }: ThumbnailProps) => {
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setThumbnailUrl(null);
+    setIsLoading(true);
+
+    getThumbnailData(image.id)
+      .then((dataUrl) => {
+        if (!cancelled && dataUrl) {
+          setThumbnailUrl(dataUrl);
+        }
+      })
+      .catch(() => {
+        // Silently fail - will show mock gradient fallback
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [image.id]);
+
   return (
     <div
       className={`relative aspect-square bg-[#222] rounded overflow-hidden cursor-pointer transition-all ${
@@ -17,8 +46,20 @@ const Thumbnail = memo(({ image, isSelected, onSelect }: ThumbnailProps) => {
       }`}
       onClick={() => onSelect(image.id)}
     >
-      {/* Mock gradient placeholder instead of actual thumbnail */}
-      <MockImage id={image.id} />
+      {thumbnailUrl ? (
+        <img
+          src={thumbnailUrl}
+          alt={image.file_name}
+          className="w-full h-full object-cover"
+          loading="lazy"
+        />
+      ) : isLoading ? (
+        <div className="w-full h-full flex items-center justify-center">
+          <div className="w-5 h-5 border-2 border-[#444] border-t-blue-500 rounded-full animate-spin" />
+        </div>
+      ) : (
+        <MockImage id={image.id} />
+      )}
 
       {/* Rating overlay */}
       {image.rating > 0 && (
@@ -57,7 +98,7 @@ export default Thumbnail;
 
 /**
  * Generates a deterministic gradient placeholder based on image ID.
- * Replaces actual thumbnail loading until the backend pipeline is ready.
+ * Shown when thumbnail is unavailable or failed to load.
  */
 function MockImage({ id }: { id: number }) {
   const hue1 = (id * 37) % 360;
