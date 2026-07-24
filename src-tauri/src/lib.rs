@@ -44,12 +44,17 @@ async fn open_catalog(path: String, state: State<'_, AppState>) -> Result<String
 /// Creates a new .praetorian catalog at the given path.
 #[tauri::command]
 async fn create_catalog(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    log::info!("create_catalog called with path: {}", path);
     let catalog = CatalogManager::new(&path)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("Failed to create catalog: {}", e);
+            e.to_string()
+        })?;
 
     let mut guard = state.catalog.lock().await;
     *guard = Some(catalog);
+    log::info!("Catalog created successfully at: {}", path);
     Ok(path)
 }
 

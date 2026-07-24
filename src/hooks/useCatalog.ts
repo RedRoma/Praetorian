@@ -127,6 +127,7 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
       await catalogService.createCatalog(path);
       set({ path, isLoading: false });
     } catch (e: any) {
+      console.error("createCatalog failed:", e);
       set({ error: e.message || "Failed to create catalog", isLoading: false });
     }
   },

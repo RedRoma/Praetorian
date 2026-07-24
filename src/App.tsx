@@ -6,7 +6,7 @@ import DetailsPanel from "@/components/DetailsPanel";
 import { useCatalogStore } from "@/hooks/useCatalog";
 
 const App: React.FC = () => {
-  const { path, leftPanelVisible, rightPanelVisible } = useCatalogStore();
+  const { path, error, leftPanelVisible, rightPanelVisible } = useCatalogStore();
 
   const handleOpenCatalog = async () => {
     const selected = await open({
@@ -37,6 +37,7 @@ const App: React.FC = () => {
         },
       ],
     });
+    console.log("save dialog result:", selected);
     if (selected && typeof selected === "string") {
       await useCatalogStore.getState().createCatalog(selected);
     }
@@ -82,6 +83,9 @@ const App: React.FC = () => {
               New Catalog
             </button>
           </div>
+          {error && (
+            <p className="text-[12px] text-red-400 max-w-xs text-center">{error}</p>
+          )}
         </div>
       )}
     </div>
