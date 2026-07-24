@@ -322,7 +322,23 @@ impl ImagePipeline {
     ) -> Result<()> {
         let output_path = cache_dir.join(format!("thumb_{}.jpg", image_id));
 
-        Self::resize_and_save(source_path, &output_path, THUMB_MAX_DIM, THUMB_QUALITY)?;
+        // Try to generate thumbnail, but don't fail if the image is corrupted
+        if let Err(e) = Self::resize_and_save(source_path, &output_path, THUMB_MAX_DIM, THUMB_QUALITY) {
+            log::warn!("Failed to generate thumbnail for image {} ({}) : {}", image_id, source_path, e);
+            // Mark as failed so we don't keep retrying
+            sqlx::query(
+               r#"
+                UPDATE images 
+                SET has_thumbnail = 0, 
+                    thumbnail_hash = NULL 
+                WHERE id = ?
+                "#,
+            )
+            .bind(image_id)
+            .execute(pool)
+            .await?;
+            return Err(e);
+        }
 
         sqlx::query(
            r#"
@@ -350,7 +366,24 @@ impl ImagePipeline {
     ) -> Result<()> {
         let output_path = cache_dir.join(format!("preview_{}.jpg", image_id));
 
-        Self::resize_and_save(source_path, &output_path, PREVIEW_MAX_DIM, PREVIEW_QUALITY)?;
+        // Try to generate preview, but don't fail if the image is corrupted
+        if let Err(e) = Self::resize_and_save(source_path, &output_path, PREVIEW_MAX_DIM, PREVIEW_QUALITY) {
+            log::warn!("Failed to generate preview for image {} ({}) : {}", image_id, source_path, e);
+            // Mark as failed so we don't keep retrying
+            // TODO: Consider making an object, like a data source, to facilitate and encapsulate this kind of DB update logic, to avoid inline SQL statements scattered throughout the codebase.
+            sqlx::query(
+                r#"
+                UPDATE images 
+                SET has_preview = 0, 
+                    preview_hash = NULL 
+                WHERE id = ?
+                "#,
+            )
+            .bind(image_id)
+            .execute(pool)
+            .await?;
+            return Err(e);
+        }
 
         sqlx::query(
             r#"
