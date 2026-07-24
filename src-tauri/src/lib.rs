@@ -87,6 +87,7 @@ async fn list_images(
         .await
         .map_err(|e| e.to_string())?;
 
+    log::info!("list_images returned {} images", images.len());
     Ok(images)
 }
 

@@ -371,6 +371,7 @@ impl ImagePipeline {
 
     /// Resizes an image to the given max dimension and saves as JPEG.
     /// Uses libvips when the `vips` feature is enabled, otherwise falls back to `image`.
+    /// If the primary method fails, tries the other as a fallback for corrupted files.
     fn resize_and_save(
         input: &str,
         output: &Path,
@@ -379,7 +380,11 @@ impl ImagePipeline {
     ) -> Result<()> {
         #[cfg(feature = "vips")]
         {
-            return Self::resize_with_vips(input, output, max_dim, quality);
+            if let Err(e) = Self::resize_with_vips(input, output, max_dim, quality) {
+                log::warn!("vips resize failed for {}, falling back to image crate: {}", input, e);
+                return Self::resize_with_image(input, output, max_dim, quality);
+            }
+            return Ok(());
         }
 
         #[cfg(not(feature = "vips"))]

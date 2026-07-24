@@ -135,12 +135,15 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
   loadImages: async (offset = 0, limit = 60) => {
     set({ isLoading: true, error: null });
     try {
+      console.log("[Catalog] Loading images offset=", offset, "limit=", limit);
       const [images, total] = await Promise.all([
         catalogService.listImages(offset, limit),
         catalogService.countImages(),
       ]);
+      console.log("[Catalog] Loaded", images.length, "images, total=", total);
       set({ images, totalImages: total, isLoading: false });
     } catch (e: any) {
+      console.error("[Catalog] Failed to load images:", e);
       set({ error: e.message || "Failed to load images", isLoading: false });
     }
   },
@@ -166,13 +169,17 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
   importDirectory: async (dirPath: string) => {
     set({ isLoading: true });
     try {
+      console.log("[Catalog] Importing directory:", dirPath);
       const imported = await catalogService.importDirectory(dirPath);
+      console.log("[Catalog] Imported", imported, "images");
       await get().loadImages();
       await get().loadFolders();
       await get().loadStats();
+      console.log("[Catalog] Import complete, state:", get().images.length, "images loaded");
       set({ isLoading: false });
       return imported;
     } catch (e: any) {
+      console.error("[Catalog] Import failed:", e);
       set({ error: e.message || "Failed to import directory", isLoading: false });
       throw e;
     }
