@@ -31,9 +31,10 @@ impl Database {
 
         log::info!("Connecting to SQLite: {}", path);
 
-        // Connect with a single-connection pool to avoid race conditions during file creation on Windows.
+        // Connection pool sized for concurrent image processing tasks.
+        // WAL mode is enabled, allowing concurrent reads and serialised writes.
         let pool = sqlx::pool::PoolOptions::new()
-            .max_connections(1)
+            .max_connections(num_cpus::get().min(8) as u32)
             .connect_with(options)
             .await
             .map_err(|e| {

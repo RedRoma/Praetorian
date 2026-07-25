@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use anyhow::Result;
 
@@ -120,15 +122,21 @@ impl ImagePipeline {
     }
 
     /// Core worker loop: processes jobs from the channel, then polls the DB queue.
+    /// Uses a semaphore to limit concurrency and drains continuously without blocking
+    /// on batch completion, so new images start processing while earlier ones are still running.
     async fn worker_loop(
         mut receiver: mpsc::Receiver<ProcessingJob>,
         cache_dir: PathBuf,
         pool: SqlitePool,
     ) {
-        log::info!("Worker loop started, cache_dir={}, max_concurrent={}", cache_dir.display(), max_concurrent_tasks());
+        let max_concurrent = max_concurrent_tasks();
+        let sem = Arc::new(Semaphore::new(max_concurrent));
+        let mut handles = Vec::new();
+
+        log::info!("Worker loop started, cache_dir={}, max_concurrent={}", cache_dir.display(), max_concurrent);
 
         loop {
-            // Phase 1: batch channel jobs with short timeout, then process in parallel
+            // Phase 1: batch channel jobs with short timeout, then spawn in parallel
             let mut batch = Vec::new();
             let mut channel_closed = false;
 
@@ -151,49 +159,66 @@ impl ImagePipeline {
             }
 
             if !batch.is_empty() {
-                Self::process_batch(batch, &cache_dir, &pool).await;
+                Self::process_batch(batch, &cache_dir, &pool, &sem, &mut handles);
             }
 
             if channel_closed {
+                // Final drain of any remaining DB jobs before shutdown
+                if let Err(e) = Self::drain_db_queue(&cache_dir, &pool, &sem, &mut handles).await {
+                    log::error!("Error draining DB queue: {}", e);
+                }
                 break;
             }
 
-            // Phase 2: poll DB queue for pending jobs
-            if let Err(e) = Self::drain_db_queue(&cache_dir, &pool).await {
+            // Phase 2: poll DB queue for pending jobs (non-blocking spawn)
+            if let Err(e) = Self::drain_db_queue(&cache_dir, &pool, &sem, &mut handles).await {
                 log::error!("Error draining DB queue: {}", e);
             }
         }
 
+        // Await all outstanding work before exiting
+        for handle in handles {
+            let _ = handle.await;
+        }
         log::info!("Worker loop exited (channel closed)");
     }
 
-    /// Processes a batch of jobs in parallel.
-    async fn process_batch(jobs: Vec<ProcessingJob>, cache_dir: &Path, pool: &SqlitePool) {
-        let mut handles = Vec::new();
+    /// Spawns a batch of jobs with semaphore-limited concurrency (non-blocking).
+    fn process_batch(
+        jobs: Vec<ProcessingJob>,
+        cache_dir: &Path,
+        pool: &SqlitePool,
+        sem: &Arc<Semaphore>,
+        handles: &mut Vec<JoinHandle<()>>,
+    ) {
         for job in jobs {
             let cd = cache_dir.to_path_buf();
             let p = pool.clone();
+            let s = sem.clone();
             let handle = tokio::spawn(async move {
+                let _permit = s.acquire_owned().await;
                 Self::process_job(job, &cd, &p).await;
             });
             handles.push(handle);
         }
-        for handle in handles {
-            let _ = handle.await;
-        }
     }
 
-    /// Polls the `processing_queue` table for pending jobs and processes them.
-    async fn drain_db_queue(cache_dir: &Path, pool: &SqlitePool) -> Result<()> {
-        let limit = max_concurrent_tasks();
+    /// Polls the `processing_queue` table for pending jobs and spawns them (non-blocking).
+    async fn drain_db_queue(
+        cache_dir: &Path,
+        pool: &SqlitePool,
+        sem: &Arc<Semaphore>,
+        handles: &mut Vec<JoinHandle<()>>,
+    ) -> Result<()> {
+        let limit = max_concurrent_tasks() * 2;
         let pending: Vec<(i64, i64, String, String)> = sqlx::query_as(
             r#"
-            SELECT pq.id, 
-                   pq.image_id, 
-                   i.file_path, 
+            SELECT pq.id,
+                   pq.image_id,
+                   i.file_path,
                    pq.task_type
             FROM processing_queue pq
-            JOIN images i 
+            JOIN images i
                 ON i.id = pq.image_id
             WHERE pq.status = 'pending'
             ORDER BY pq.priority DESC
@@ -207,8 +232,6 @@ impl ImagePipeline {
         if pending.is_empty() {
             return Ok(());
         }
-
-        let mut handles = Vec::new();
 
         for (queue_id, image_id, file_path, task_type) in pending {
             let job_type = match task_type.as_str() {
@@ -229,16 +252,13 @@ impl ImagePipeline {
 
             let cd = cache_dir.to_path_buf();
             let p = pool.clone();
+            let s = sem.clone();
 
             let handle = tokio::spawn(async move {
+                let _permit = s.acquire_owned().await;
                 Self::process_job(job, &cd, &p).await;
             });
             handles.push(handle);
-        }
-
-        // Wait for all spawned jobs to complete
-        for handle in handles {
-            let _ = handle.await;
         }
 
         Ok(())
@@ -354,7 +374,13 @@ impl ImagePipeline {
         let output_path = cache_dir.join(format!("thumb_{}.jpg", image_id));
 
         // Try to generate thumbnail, but don't fail if the image is corrupted
-        if let Err(e) = Self::resize_and_save(source_path, &output_path, THUMB_MAX_DIM, THUMB_QUALITY) {
+        let source = source_path.to_string();
+        let out_path = output_path.clone();
+        let thumb_result = tokio::task::spawn_blocking(move || {
+            Self::resize_and_save(&source, &out_path, THUMB_MAX_DIM, THUMB_QUALITY)
+        })
+        .await;
+        if let Err(e) = thumb_result.map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e)).and_then(|r| r) {
             log::warn!("Failed to generate thumbnail for image {} ({}) : {}", image_id, source_path, e);
             // Mark as failed so we don't keep retrying
             sqlx::query(
@@ -398,7 +424,13 @@ impl ImagePipeline {
         let output_path = cache_dir.join(format!("preview_{}.jpg", image_id));
 
         // Try to generate preview, but don't fail if the image is corrupted
-        if let Err(e) = Self::resize_and_save(source_path, &output_path, PREVIEW_MAX_DIM, PREVIEW_QUALITY) {
+        let source = source_path.to_string();
+        let out_path = output_path.clone();
+        let preview_result = tokio::task::spawn_blocking(move || {
+            Self::resize_and_save(&source, &out_path, PREVIEW_MAX_DIM, PREVIEW_QUALITY)
+        })
+        .await;
+        if let Err(e) = preview_result.map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e)).and_then(|r| r) {
             log::warn!("Failed to generate preview for image {} ({}) : {}", image_id, source_path, e);
             // Mark as failed so we don't keep retrying
             // TODO: Consider making an object, like a data source, to facilitate and encapsulate this kind of DB update logic, to avoid inline SQL statements scattered throughout the codebase.
