@@ -23,6 +23,12 @@ interface CatalogStore extends CatalogState {
   leftPanelVisible: boolean;
   rightPanelVisible: boolean;
 
+  // Fullscreen viewer
+  viewerImageId: number | null;
+  zoomLevel: number;
+  panX: number;
+  panY: number;
+
   // Catalog operations
   openCatalog: (path: string) => Promise<void>;
   createCatalog: (path: string) => Promise<void>;
@@ -44,6 +50,14 @@ interface CatalogStore extends CatalogState {
   setActiveView: (view: SidebarView) => void;
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
+
+  // Viewer
+  openViewer: (id: number) => void;
+  closeViewer: () => void;
+  navigateViewer: (direction: "prev" | "next") => void;
+  setZoom: (level: number) => void;
+  resetZoom: () => void;
+  setPan: (x: number, y: number) => void;
 
   // Rating & favorites
   updateRating: (id: number, rating: number) => Promise<void>;
@@ -108,6 +122,10 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
   activeView: "library",
   leftPanelVisible: true,
   rightPanelVisible: true,
+  viewerImageId: null,
+  zoomLevel: 1,
+  panX: 0,
+  panY: 0,
 
   openCatalog: async (path: string) => {
     set({ isLoading: true, error: null });
@@ -232,6 +250,37 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
 
   toggleRightPanel: () => {
     set((s) => ({ rightPanelVisible: !s.rightPanelVisible }));
+  },
+
+  openViewer: (id: number) => {
+    set({ viewerImageId: id, zoomLevel: 1, panX: 0, panY: 0 });
+  },
+
+  closeViewer: () => {
+    set({ viewerImageId: null, zoomLevel: 1, panX: 0, panY: 0 });
+  },
+
+  navigateViewer: (direction: "prev" | "next") => {
+    const { images, viewerImageId } = get();
+    if (viewerImageId === null) return;
+    const currentIndex = images.findIndex((img) => img.id === viewerImageId);
+    if (currentIndex === -1) return;
+    const nextIndex = direction === "next"
+      ? (currentIndex + 1) % images.length
+      : (currentIndex - 1 + images.length) % images.length;
+    set({ viewerImageId: images[nextIndex].id, zoomLevel: 1, panX: 0, panY: 0 });
+  },
+
+  setZoom: (level: number) => {
+    set({ zoomLevel: Math.max(0.25, Math.min(10, level)) });
+  },
+
+  resetZoom: () => {
+    set({ zoomLevel: 1, panX: 0, panY: 0 });
+  },
+
+  setPan: (x: number, y: number) => {
+    set({ panX: x, panY: y });
   },
 
   updateRating: async (id: number, rating: number) => {

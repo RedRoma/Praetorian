@@ -180,6 +180,35 @@ async fn get_preview_path(
     Ok(path)
 }
 
+/// Returns the full-size image as a base64 data URL for display in the viewer.
+#[tauri::command]
+async fn get_image_data(
+    image_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let pool = get_pool(state).await?;
+    let (image, _) = CatalogManager::get_image_details_from_pool(&pool, image_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let path = std::path::Path::new(&image.file_path);
+    if !path.exists() {
+        return Ok(String::new());
+    }
+
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let ext = image.file_extension.to_lowercase();
+    let mime_type = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        _ => "image/jpeg",
+    };
+    let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
+    Ok(format!("data:{};base64,{}", mime_type, base64))
+}
+
 /// Starts the background face detection index for all unindexed images.
 #[tauri::command]
 async fn start_face_index(state: State<'_, AppState>) -> Result<(), String> {
@@ -825,6 +854,7 @@ pub fn run() {
             list_folders,
             get_thumbnail_path,
             get_thumbnail_data,
+            get_image_data,
             get_preview_path,
             start_face_index,
             upscale_image,

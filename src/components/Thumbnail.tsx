@@ -6,9 +6,10 @@ interface ThumbnailProps {
   image: ImageRecord;
   isSelected: boolean;
   onSelect: (id: number) => void;
+  onDoubleClick?: (id: number) => void;
 }
 
-const Thumbnail = memo(({ image, isSelected, onSelect }: ThumbnailProps) => {
+const Thumbnail = memo(({ image, isSelected, onSelect, onDoubleClick }: ThumbnailProps) => {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -48,6 +49,7 @@ const Thumbnail = memo(({ image, isSelected, onSelect }: ThumbnailProps) => {
           : "hover:ring-1 hover:ring-[#444]"
       }`}
       onClick={() => onSelect(image.id)}
+      onDoubleClick={() => onDoubleClick?.(image.id)}
     >
       {thumbnailUrl ? (
         <img

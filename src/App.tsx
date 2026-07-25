@@ -3,10 +3,11 @@ import Toolbar from "@/components/Toolbar";
 import Sidebar from "@/components/Sidebar";
 import GalleryGrid from "@/components/GalleryGrid";
 import DetailsPanel from "@/components/DetailsPanel";
+import ImageViewer from "@/components/ImageViewer";
 import { useCatalogStore } from "@/hooks/useCatalog";
 
 const App: React.FC = () => {
-  const { path, error, leftPanelVisible, rightPanelVisible } = useCatalogStore();
+  const { path, error, leftPanelVisible, rightPanelVisible, viewerImageId } = useCatalogStore();
 
   const handleOpenCatalog = async () => {
     const selected = await open({
@@ -90,6 +91,7 @@ const App: React.FC = () => {
           )}
         </div>
       )}
+      {viewerImageId && <ImageViewer />}
     </div>
   );
 };

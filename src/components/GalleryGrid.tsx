@@ -7,7 +7,7 @@ const COLUMNS = 5;
 const ITEM_HEIGHT = 180;
 
 const GalleryGrid: React.FC = () => {
-  const { images, selectedImageIds, selectImage, deselectImage, clearSelection } =
+  const { images, selectedImageIds, selectImage, deselectImage, clearSelection, openViewer } =
     useCatalogStore();
 
   const parentRef = useRef<HTMLDivElement>(null);
@@ -105,6 +105,7 @@ const GalleryGrid: React.FC = () => {
                       image={img}
                       isSelected={selectedImageIds.has(img.id)}
                       onSelect={(id) => handleSelect(id, {} as React.MouseEvent)}
+                      onDoubleClick={openViewer}
                     />
                   </div>
                 ))}

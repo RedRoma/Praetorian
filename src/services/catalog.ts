@@ -80,6 +80,10 @@ export async function getThumbnailData(imageId: number): Promise<string> {
   return invoke<string>("get_thumbnail_data", { imageId });
 }
 
+export async function getImageData(imageId: number): Promise<string> {
+  return invoke<string>("get_image_data", { imageId });
+}
+
 export async function getPreviewPath(imageId: number): Promise<string> {
   return invoke<string>("get_preview_path", { imageId });
 }
