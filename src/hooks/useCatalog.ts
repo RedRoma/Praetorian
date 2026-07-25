@@ -133,7 +133,7 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
     }
   },
 
-  loadImages: async (offset = 0, limit = 60) => {
+  loadImages: async (offset = 0, limit = 100000) => {
     set({ isLoading: true, error: null });
     try {
       console.log("[Catalog] Loading images offset=", offset, "limit=", limit);
