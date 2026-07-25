@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useCatalogStore } from "@/hooks/useCatalog";
 
 const Sidebar: React.FC = () => {
-  const { folders, activeView } = useCatalogStore();
+  const { folders, activeView, totalImages } = useCatalogStore();
 
   return (
     <div className="w-56 bg-[#1e1e1e] border-r border-[#2a2a2a] flex flex-col overflow-hidden shrink-0">
@@ -31,19 +31,21 @@ const Sidebar: React.FC = () => {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {activeView === "library" && <LibraryView folders={folders} />}
+        {activeView === "library" && (
+          <LibraryView folders={folders} totalImages={totalImages} />
+        )}
         {activeView === "people" && <PeopleView />}
       </div>
 
       {/* Bottom status */}
       <div className="border-t border-[#2a2a2a] p-2 text-[11px] text-[#555]">
-        Catalog: 60 images
+        Catalog: {totalImages} images
       </div>
     </div>
   );
 };
 
-function LibraryView({ folders }: { folders: any[] }) {
+function LibraryView({ folders, totalImages }: { folders: any[]; totalImages: number }) {
   return (
     <div className="py-1">
       <SectionHeader label="Catalog" defaultOpen />
@@ -55,7 +57,7 @@ function LibraryView({ folders }: { folders: any[] }) {
             </svg>
           }
           label="All Photos"
-          count={60}
+          count={totalImages}
           active
         />
         <SidebarItem
@@ -65,7 +67,6 @@ function LibraryView({ folders }: { folders: any[] }) {
             </svg>
           }
           label="Favorites"
-          count={5}
         />
         <SidebarItem
           icon={
@@ -74,7 +75,6 @@ function LibraryView({ folders }: { folders: any[] }) {
             </svg>
           }
           label="Rated"
-          count={12}
         />
       </div>
 

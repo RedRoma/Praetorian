@@ -58,7 +58,7 @@ const GalleryGrid: React.FC = () => {
   return (
     <div
       ref={parentRef}
-      className="w-full h-full overflow-auto bg-[#181818]"
+      className="flex-1 w-full min-h-0 overflow-auto bg-[#181818]"
       style={{ contain: "strict" }}
       onClick={() => clearSelection()}
     >
@@ -70,7 +70,7 @@ const GalleryGrid: React.FC = () => {
         }}
       >
         {virtualizer.getVirtualItems().map((virtualRow) => {
-          const startIndex = virtualRow.start * COLUMNS;
+          const startIndex = virtualRow.index * COLUMNS;
           const rowImages = images.slice(startIndex, startIndex + COLUMNS);
 
           if (rowImages.length === 0 && virtualRow.index < 3) {

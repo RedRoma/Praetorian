@@ -51,7 +51,9 @@ const App: React.FC = () => {
         <div className="flex-1 flex overflow-hidden">
           {leftPanelVisible && <Sidebar />}
           <div className="flex-1 flex flex-col overflow-hidden">
-            <GalleryGrid />
+            <div className="flex-1 min-h-0 flex flex-col">
+              <GalleryGrid />
+            </div>
             <FilmStrip />
           </div>
           {rightPanelVisible && <DetailsPanel />}
