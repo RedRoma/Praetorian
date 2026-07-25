@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useEffect } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCatalogStore } from "@/hooks/useCatalog";
 import Thumbnail from "@/components/Thumbnail";
@@ -11,6 +11,15 @@ const GalleryGrid: React.FC = () => {
     useCatalogStore();
 
   const parentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    console.log(`[GalleryGrid] Images loaded: ${images.length}`);
+    if (images.length > 0) {
+      console.log(`[GalleryGrid] First image id=${images[0].id}, has_thumbnail=${images[0].has_thumbnail}`);
+      const withThumb = images.filter(i => i.has_thumbnail).length;
+      console.log(`[GalleryGrid] With thumbnails: ${withThumb}/${images.length}`);
+    }
+  }, [images.length]);
 
   const totalItems = images.length;
   const totalRows = Math.ceil(totalItems / COLUMNS);
@@ -63,6 +72,10 @@ const GalleryGrid: React.FC = () => {
         {virtualizer.getVirtualItems().map((virtualRow) => {
           const startIndex = virtualRow.start * COLUMNS;
           const rowImages = images.slice(startIndex, startIndex + COLUMNS);
+
+          if (rowImages.length === 0 && virtualRow.index < 3) {
+            console.warn(`[GalleryGrid] Row ${virtualRow.index} has no images! start=${startIndex}, totalItems=${totalItems}`);
+          }
 
           return (
             <div

@@ -785,6 +785,16 @@ async fn export_xmp_sidecars(
     Ok(exported)
 }
 
+/// Re-parses EXIF metadata for all images in the catalog.
+#[tauri::command]
+async fn rebuild_metadata(state: State<'_, AppState>) -> Result<usize, String> {
+    let guard = state.catalog.lock().await;
+    let catalog = guard.as_ref().ok_or_else(|| "No catalog open".to_string())?;
+
+    let updated = catalog.rebuild_metadata().await.map_err(|e| e.to_string())?;
+    Ok(updated)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -855,6 +865,7 @@ pub fn run() {
             get_images_for_album,
             get_catalog_stats,
             export_xmp_sidecars,
+            rebuild_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

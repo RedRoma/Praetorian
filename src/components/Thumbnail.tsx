@@ -20,11 +20,14 @@ const Thumbnail = memo(({ image, isSelected, onSelect }: ThumbnailProps) => {
     getThumbnailData(image.id)
       .then((dataUrl) => {
         if (!cancelled && dataUrl) {
+          console.log(`[Thumbnail] Loaded for image ${image.id}, size=${dataUrl.length}`);
           setThumbnailUrl(dataUrl);
+        } else if (!cancelled) {
+          console.log(`[Thumbnail] No thumbnail data for image ${image.id}`);
         }
       })
-      .catch(() => {
-        // Silently fail - will show mock gradient fallback
+      .catch((err) => {
+        console.error(`[Thumbnail] Error loading image ${image.id}:`, err);
       })
       .finally(() => {
         if (!cancelled) {
@@ -104,15 +107,17 @@ function MockImage({ id }: { id: number }) {
   const hue1 = (id * 37) % 360;
   const hue2 = (hue1 + 40 + (id * 13) % 60) % 360;
   const angle = (id * 47) % 360;
-  const sat = 15 + (id * 7) % 20;
-  const light = 18 + (id * 3) % 15;
+  const sat = 25 + (id * 7) % 25;
+  const light = 30 + (id * 3) % 18;
 
   return (
     <div
-      className="w-full h-full"
+      className="w-full h-full flex items-center justify-center"
       style={{
         background: `linear-gradient(${angle}deg, hsl(${hue1}, ${sat}%, ${light}%), hsl(${hue2}, ${sat + 5}%, ${light + 8}%))`,
       }}
-    />
+    >
+      <span className="text-[9px] text-white/40 font-mono">{id}</span>
+    </div>
   );
 }

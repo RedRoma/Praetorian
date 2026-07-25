@@ -362,3 +362,7 @@ export async function exportXmpSidecars(
 ): Promise<number> {
   return invoke<number>("export_xmp_sidecars", { imageIds, outputDir });
 }
+
+export async function rebuildMetadata(): Promise<number> {
+  return invoke<number>("rebuild_metadata");
+}

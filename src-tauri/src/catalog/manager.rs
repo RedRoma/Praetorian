@@ -247,6 +247,20 @@ impl CatalogManager {
             .parse(file_path)
             .unwrap_or_default();
 
+        // Use filesystem modification time as fallback for date_taken
+        let file_date = metadata.modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+
+        let date_taken = exif.date_time_original.clone().or_else(|| {
+            file_date.map(|secs| {
+                use chrono::{DateTime, Utc};
+                DateTime::<Utc>::from_timestamp(secs as i64, 0)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            }).flatten()
+        });
+
         // Insert image record
         let result = sqlx::query(
             r#"
@@ -270,7 +284,7 @@ impl CatalogManager {
         .bind(metadata.len() as i64)
         .bind(exif.width.map(|w| w as i32))
         .bind(exif.height.map(|h| h as i32))
-        .bind(exif.date_time_original.as_deref())
+        .bind(date_taken.as_deref())
         .bind(file_hash)
         .execute(pool)
         .await?;
@@ -421,7 +435,7 @@ impl CatalogManager {
             FROM images
             WHERE is_archived = 0
               AND (? IS NULL OR rating = ?)
-            ORDER BY date_taken DESC
+            ORDER BY COALESCE(date_taken, date_imported) DESC
             LIMIT ? OFFSET ?
             "#,
         )
@@ -723,7 +737,7 @@ impl CatalogManager {
             FROM images
             WHERE is_archived = 0
               AND (? IS NULL OR rating = ?)
-            ORDER BY date_taken DESC
+            ORDER BY COALESCE(date_taken, date_imported) DESC
             LIMIT ? OFFSET ?
             "#,
         )
@@ -949,7 +963,7 @@ impl CatalogManager {
                 file_name LIKE ?
                 OR file_path LIKE ?
               )
-            ORDER BY date_taken DESC
+            ORDER BY COALESCE(date_taken, date_imported) ASC
             LIMIT ? OFFSET ?
             "#,
         )
@@ -1692,5 +1706,99 @@ impl CatalogManager {
         }
 
         Ok(exported)
+    }
+
+    /// Re-parses EXIF metadata for all images in the catalog.
+    /// Useful when EXIF parsing was broken or after schema changes.
+    pub async fn rebuild_metadata(&self) -> Result<usize> {
+        let pool = self.db.pool();
+
+        let images: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, file_path FROM images WHERE is_missing = 0",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        log::info!("Rebuilding metadata for {} images", images.len());
+
+        let mut updated = 0usize;
+
+        for (image_id, file_path) in &images {
+            if !std::path::Path::new(file_path).exists() {
+                continue;
+            }
+
+            match self.exif_parser.parse(file_path) {
+                Ok(exif) => {
+                    // Update date_taken if we have it
+                    if let Some(ref dt) = exif.date_time_original {
+                        sqlx::query(
+                            "UPDATE images SET date_taken = ? WHERE id = ?",
+                        )
+                        .bind(dt.as_str())
+                        .bind(image_id)
+                        .execute(pool)
+                        .await?;
+                    }
+
+                    // Update dimensions if we have them
+                    if exif.width.is_some() || exif.height.is_some() {
+                        sqlx::query(
+                            "UPDATE images SET width = ?, height = ? WHERE id = ?",
+                        )
+                        .bind(exif.width.map(|w| w as i32))
+                        .bind(exif.height.map(|h| h as i32))
+                        .bind(image_id)
+                        .execute(pool)
+                        .await?;
+                    }
+
+                    // Update or insert EXIF data
+                    sqlx::query(
+                        r#"
+                        INSERT INTO exif_data (
+                            image_id, camera_make, camera_model, lens_model,
+                            iso, aperture_f_number, shutter_speed_num, shutter_speed_den,
+                            focal_length_mm, gps_latitude, gps_longitude, gps_altitude
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(image_id) DO UPDATE SET
+                            camera_make = EXCLUDED.camera_make,
+                            camera_model = EXCLUDED.camera_model,
+                            lens_model = EXCLUDED.lens_model,
+                            iso = EXCLUDED.iso,
+                            aperture_f_number = EXCLUDED.aperture_f_number,
+                            shutter_speed_num = EXCLUDED.shutter_speed_num,
+                            shutter_speed_den = EXCLUDED.shutter_speed_den,
+                            focal_length_mm = EXCLUDED.focal_length_mm,
+                            gps_latitude = EXCLUDED.gps_latitude,
+                            gps_longitude = EXCLUDED.gps_longitude,
+                            gps_altitude = EXCLUDED.gps_altitude
+                        "#,
+                    )
+                    .bind(image_id)
+                    .bind(exif.camera_make.as_deref())
+                    .bind(exif.camera_model.as_deref())
+                    .bind(exif.lens_model.as_deref())
+                    .bind(exif.iso.map(|i| i as i32))
+                    .bind(exif.aperture)
+                    .bind(exif.shutter_num.map(|n| n as i32))
+                    .bind(exif.shutter_den.map(|d| d as i32))
+                    .bind(exif.focal_length)
+                    .bind(exif.gps_latitude)
+                    .bind(exif.gps_longitude)
+                    .bind(exif.gps_altitude)
+                    .execute(pool)
+                    .await?;
+
+                    updated += 1;
+                }
+                Err(e) => {
+                    log::warn!("Failed to rebuild metadata for {}: {}", file_path, e);
+                }
+            }
+        }
+
+        log::info!("Rebuilt metadata for {} images", updated);
+        Ok(updated)
     }
 }

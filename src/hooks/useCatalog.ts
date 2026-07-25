@@ -32,6 +32,7 @@ interface CatalogStore extends CatalogState {
 
   // Import
   importDirectory: (dirPath: string) => Promise<number>;
+  rebuildMetadata: () => Promise<number>;
 
   // Image selection
   selectImage: (id: number) => void;
@@ -181,6 +182,19 @@ export const useCatalogStore = create<CatalogStore>((set, get) => ({
     } catch (e: any) {
       console.error("[Catalog] Import failed:", e);
       set({ error: e.message || "Failed to import directory", isLoading: false });
+      throw e;
+    }
+   },
+
+  rebuildMetadata: async () => {
+    set({ isLoading: true });
+    try {
+      const updated = await catalogService.rebuildMetadata();
+      await get().loadImages();
+      set({ isLoading: false });
+      return updated;
+    } catch (e: any) {
+      set({ error: e.message || "Failed to rebuild metadata", isLoading: false });
       throw e;
     }
   },

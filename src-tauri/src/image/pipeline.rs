@@ -7,7 +7,7 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 
 /// Thumbnail dimensions for the grid view.
-const THUMB_MAX_DIM: u32 = 160;
+const THUMB_MAX_DIM: u32 = 512;
 
 /// Smart preview maximum long edge.
 const PREVIEW_MAX_DIM: u32 = 2048;
