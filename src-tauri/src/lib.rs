@@ -6,9 +6,11 @@ mod exif;
 mod face;
 mod python;
 
+use std::sync::Arc;
+use std::fs;
 use anyhow::Result;
 use tokio::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use sqlx::SqlitePool;
 use catalog::manager::{CatalogManager, FaceRecord, PersonRecord, TagRecord, AlbumRecord, CatalogStats};
 
@@ -61,12 +63,25 @@ async fn create_catalog(path: String, state: State<'_, AppState>) -> Result<Stri
 /// Scans a directory and imports all supported images into the catalog.
 #[tauri::command]
 async fn import_directory(
+    app_handle: AppHandle,
     dir_path: String,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
     let pool = get_pool(state).await?;
 
-    let imported = CatalogManager::import_directory_from_pool(&pool, &dir_path)
+    let batch_size = num_cpus::get() * 2;
+
+    let progress_cb: Arc<dyn Fn(i32, i32, &str) + Send + Sync> = Arc::new(
+        move |current: i32, total: i32, filename: &str| {
+            let _ = app_handle.emit("import-progress", serde_json::json!({
+                "current": current,
+                "total": total,
+                "filename": filename,
+            }));
+        },
+    );
+
+    let imported = CatalogManager::import_directory_from_pool(&pool, &dir_path, batch_size, Some(progress_cb))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -835,12 +850,46 @@ pub fn run() {
                 catalog: Mutex::new(None),
             });
 
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::from_default_env()
-                        .add_directive("praetorian=debug".parse().unwrap()),
-                )
-                .init();
+            // Bridge log:: crate to tracing so our log::info! calls are captured.
+            tracing_log::LogTracer::init().ok();
+
+            // Set up file logging to the app's data directory.
+            let app_data_dir = app.path().app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from(".").to_path_buf());
+            fs::create_dir_all(&app_data_dir).ok();
+            let log_file = app_data_dir.join("praetorian.log");
+
+            let file = fs::File::create(&log_file).ok();
+            if let Some(f) = file {
+                let subscriber = tracing_subscriber::fmt()
+                    .with_env_filter(
+                        tracing_subscriber::EnvFilter::from_default_env()
+                            .add_directive("praetorian=debug".parse().unwrap())
+                            .add_directive("sqlx=warn".parse().unwrap()),
+                    )
+                    .with_writer(f)
+                    .finish();
+                tracing_subscriber::fmt()
+                    .with_env_filter(
+                        tracing_subscriber::EnvFilter::from_default_env()
+                            .add_directive("praetorian=debug".parse().unwrap())
+                            .add_directive("sqlx=warn".parse().unwrap()),
+                    )
+                    .with_writer(std::io::stdout)
+                    .with_ansi(true)
+                    .finish();
+
+                let _ = tracing::subscriber::set_global_default(subscriber);
+            } else {
+                tracing_subscriber::fmt()
+                    .with_env_filter(
+                        tracing_subscriber::EnvFilter::from_default_env()
+                            .add_directive("praetorian=debug".parse().unwrap()),
+                    )
+                    .init();
+            }
+
+            log::info!("Log file: {}", log_file.display());
 
             Ok(())
         })

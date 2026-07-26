@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::sync::Arc;
 
 use sqlx::{SqlitePool, FromRow, Row};
 use sha2::{Sha256, Digest};
@@ -169,7 +170,11 @@ impl CatalogManager {
         let mut queue = vec![dir.to_path_buf()];
 
         while let Some(current_dir) = queue.pop() {
-            for entry in WalkDir::new(&current_dir).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(&current_dir)
+                .max_depth(1)
+                .into_iter()
+                .filter_map(|e| e.ok()) {
+
                 if entry.file_type().is_dir() {
                     if entry.file_name() != ".praetorian" {
                         queue.push(entry.path().to_path_buf());
@@ -474,29 +479,173 @@ impl CatalogManager {
     }
 
     /// Static method to import directory using a cloned pool (avoids holding mutex across await).
-    pub async fn import_directory_from_pool(pool: &SqlitePool, dir_path: &str) -> Result<usize> {
+    ///
+    /// Three-phase approach:
+    /// 1. Scan & collect all candidate image paths from the directory tree.
+    /// 2. Batch SELECT EXISTS to find which paths are already cataloged.
+    /// 3. Process uncataloged images in configurable batches with parallel metadata extraction.
+    ///
+    /// `batch_size` controls how many images are processed concurrently per batch.
+    /// `progress_cb` is called for each image after it's been inserted (current, total, filename).
+    pub async fn import_directory_from_pool(
+        pool: &SqlitePool,
+        dir_path: &str,
+        batch_size: usize,
+        progress_cb: Option<Arc<dyn Fn(i32, i32, &str) + Send + Sync>>,
+    ) -> Result<usize> {
         let dir = Path::new(dir_path);
 
         if !dir.exists() {
+            log::info!(
+                "Directory does not exist: {}",
+                dir_path
+            );
             anyhow::bail!("Directory does not exist: {}", dir_path);
         }
 
-        log::info!("Importing directory: {}", dir_path);
+        let import_start = std::time::Instant::now();
+        log::info!(
+            "Importing directory: {} (batch_size={})",
+            dir_path,
+            batch_size
+        );
 
+        // --- Phase 1: Scan & collect candidate image paths ---
+        // Run on blocking pool so we don't starve tokio's async workers.
+        let scan_start = std::time::Instant::now();
+        let dir_clone = dir.to_path_buf();
+        let (candidates, queued_subdirs) = tokio::task::spawn_blocking(move || {
+            Self::scan_directory(&dir_clone)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("scan_directory join error: {}", e))?;
+        let scan_elapsed = scan_start.elapsed();
+        log::info!(
+            "Scan complete: {} candidates, {} subdirectories (took {:.2}s)",
+            candidates.len(),
+            queued_subdirs,
+            scan_elapsed.as_secs_f64()
+        );
+
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        // --- Phase 2: Batch dedup check ---
+        let dedup_start = std::time::Instant::now();
+        log::info!("Starting dedup check...");
+        let uncataloged = Self::batch_dedup(pool, &candidates).await?;
+        let dedup_elapsed = dedup_start.elapsed();
+        log::info!(
+            "Dedup complete: {} new images out of {} candidates (took {:.2}s)",
+            uncataloged.len(),
+            candidates.len(),
+            dedup_elapsed.as_secs_f64()
+        );
+
+        if uncataloged.is_empty() {
+            return Ok(0);
+        }
+
+        // --- Phase 3: Parallel metadata extraction & insert ---
+        let import_phase_start = std::time::Instant::now();
+        log::info!("Starting import phase...");
         let folder_id = Self::ensure_folder_static(dir_path, pool).await?;
-        log::info!("Folder ID: {}", folder_id);
-
         let mut imported = 0usize;
-        let mut queued = 0usize;
-        let mut checked = 0usize;
-        let mut queue = vec![dir.to_path_buf()];
+        let total = uncataloged.len() as i32;
+
+        // For each batch.
+        for (batch_num, batch) in uncataloged.chunks(batch_size).enumerate() {
+            let batch_start = std::time::Instant::now();
+            log::info!(
+                "Processing batch {} ({} images)",
+                batch_num + 1,
+                batch.len()
+            );
+
+            let handles: Vec<_> = batch.iter().map(|file_path| {
+                let filepath = file_path.clone();
+                let sql_pool = pool.clone();
+                tokio::spawn(async move { 
+                    Self::import_single_image_static(
+                        &filepath,
+                        folder_id,
+                        &sql_pool
+                    ).await 
+                })
+            }).collect();
+
+            for (i, handle) in handles.into_iter().enumerate() {
+                let task_start = std::time::Instant::now();
+                match handle.await {
+                    Ok(Ok(_)) => {
+                        imported += 1;
+                        let current = imported as i32;
+                        let task_elapsed = task_start.elapsed();
+                        if let Some(cb) = &progress_cb {
+                            let filename = batch[i].split('/')
+                                                   .last()
+                                                   .unwrap_or(
+                                                       batch[i].split('\\')
+                                                               .last()
+                                                               .unwrap_or(&batch[i])
+                                                   ).to_string();
+                            log::info!(
+                                "  [{}] Import done ({:.2}s)",
+                                filename,
+                                task_elapsed.as_secs_f64()
+                            );
+                            cb(current, total, &filename);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        log::warn!("Failed to import {}: {}", batch[i], e);
+                    }
+                    Err(e) => {
+                        log::error!("Task join error for {}: {}", batch[i], e);
+                    }
+                }
+            }
+            let batch_elapsed = batch_start.elapsed();
+            log::info!(
+                "Batch {} complete (took {:.2}s)",
+                batch_num + 1,
+                batch_elapsed.as_secs_f64()
+            );
+        }
+
+        let import_phase_elapsed = import_phase_start.elapsed();
+        let total_elapsed = import_start.elapsed();
+        log::info!(
+            "Import complete: {} images imported, {} subdirectories scanned (import phase: {:.2}s, total: {:.2}s)",
+            imported,
+            queued_subdirs,
+            import_phase_elapsed.as_secs_f64(),
+            total_elapsed.as_secs_f64()
+        );
+
+        Ok(imported)
+    }
+
+    /// Phase 1 helper: walk directory tree and collect candidate image file paths.
+    fn scan_directory(root: &Path) -> (Vec<String>, usize) {
+        let mut candidates = Vec::new();
+        let mut queued_subdirs = 0usize;
+        let mut queue = vec![root.to_path_buf()];
 
         while let Some(current_dir) = queue.pop() {
-            for entry in WalkDir::new(&current_dir).into_iter().filter_map(|e| e.ok()) {
+            log::info!("Scanning directory: {}", current_dir.display());
+            for entry in WalkDir::new(&current_dir)
+                .min_depth(1)
+                .max_depth(1)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok()) {
+
                 if entry.file_type().is_dir() {
                     if entry.file_name() != ".praetorian" {
                         queue.push(entry.path().to_path_buf());
-                        queued += 1;
+                        queued_subdirs += 1;
                     }
                     continue;
                 }
@@ -508,46 +657,39 @@ impl CatalogManager {
                     .map(|s| s.to_lowercase())
                     .unwrap_or_default();
 
-                if !SUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
-                    continue;
-                }
-
-                checked += 1;
-                let file_path = entry.path().to_string_lossy().to_string();
-
-                let exists: bool = sqlx::query_scalar(
-                    r#"SELECT EXISTS(
-                        SELECT 1 
-                        FROM images 
-                        WHERE file_path = ?
-                    )"#,
-                )
-                .bind(&file_path)
-                .fetch_one(pool)
-                .await?;
-
-                if exists {
-                    continue;
-                }
-
-                log::info!("Importing: {}", file_path);
-                match Self::import_single_image_static(&file_path, folder_id, pool).await {
-                    Ok(_) => imported += 1,
-                    Err(e) => {
-                        log::warn!("Failed to import {}: {}", file_path, e);
-                    }
+                if SUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
+                    candidates.push(entry.path().to_string_lossy().to_string());
                 }
             }
         }
 
-        log::info!(
-            "Import complete: {} images imported, {} files checked, {} subdirs queued",
-            imported,
-            checked,
-            queued
-        );
+        (candidates, queued_subdirs)
+    }
 
-        Ok(imported)
+    /// Phase 2 helper: batch-check which file paths already exist in the catalog.
+    /// Fetches all existing paths from DB, then filters candidates in memory.
+    async fn batch_dedup(pool: &SqlitePool, candidates: &[String]) -> Result<Vec<String>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fetch all existing file paths from the DB in one query
+        let existing_rows: Vec<String> = sqlx::query_scalar(
+            "SELECT file_path FROM images"
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let existing_set: std::collections::HashSet<&str> =
+            existing_rows.iter().map(|s| s.as_str()).collect();
+
+        let uncataloged: Vec<String> = candidates
+            .iter()
+            .filter(|p| !existing_set.contains(p.as_str()))
+            .cloned()
+            .collect();
+
+        Ok(uncataloged)
     }
 
     async fn import_single_image_static(
@@ -555,14 +697,19 @@ impl CatalogManager {
         folder_id: i64,
         pool: &SqlitePool,
     ) -> Result<i64> {
-        let metadata = fs::metadata(file_path)
-            .context(format!("Cannot access file: {}", file_path))?;
-
-        let file_name = Path::new(file_path)
+        let file_start = std::time::Instant::now();
+        let file_name_str = Path::new(file_path)
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+
+        log::info!("[{}] Starting import", file_name_str);
+
+        let metadata = fs::metadata(file_path)
+            .context(format!("Cannot access file: {}", file_path))?;
+
+        let file_name = file_name_str.clone();
 
         let file_extension = Path::new(file_path)
             .extension()
@@ -571,11 +718,26 @@ impl CatalogManager {
             .to_string()
             .to_lowercase();
 
-        let file_hash = Self::compute_file_hash(file_path)?;
+        // Run blocking file I/O (full-file read for hash + EXIF) on the blocking pool
+        // to avoid starving tokio's async worker threads.
+        let fp = file_path.to_string();
+        let hash_start = std::time::Instant::now();
+        log::info!("[{}] Starting SHA-256 hash...", file_name);
+        let (file_hash, exif) = tokio::task::spawn_blocking(move || {
+            let hash = Self::compute_file_hash(&fp).unwrap_or_default();
+            let exif_start = std::time::Instant::now();
+            let exif_data = ExifParser::new().parse(&fp).unwrap_or_default();
+            let exif_elapsed = exif_start.elapsed();
+            log::info!("[{}] EXIF parsed ({:.2}s)", fp.split('/').last().unwrap_or(&fp), exif_elapsed.as_secs_f64());
+            (hash, exif_data)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))?;
+        let hash_elapsed = hash_start.elapsed();
+        log::info!("[{}] SHA-256 + EXIF done ({:.2}s total)", file_name, hash_elapsed.as_secs_f64());
 
-        let exif = ExifParser::new()
-            .parse(file_path)
-            .unwrap_or_default();
+        let db_start = std::time::Instant::now();
+        log::info!("[{}] Inserting into DB...", file_name);
 
         let result = sqlx::query(
             r#"
@@ -594,7 +756,7 @@ impl CatalogManager {
         )
         .bind(folder_id)
         .bind(file_path)
-        .bind(file_name)
+        .bind(&file_name)
         .bind(file_extension)
         .bind(metadata.len() as i64)
         .bind(exif.width.map(|w| w as i32))
@@ -666,6 +828,10 @@ impl CatalogManager {
         .bind(image_id)
         .execute(pool)
         .await?;
+
+        let db_elapsed = db_start.elapsed();
+        let file_total = file_start.elapsed();
+        log::info!("[{}] DB inserts done ({:.2}s), total: {:.2}s", file_name, db_elapsed.as_secs_f64(), file_total.as_secs_f64());
 
         Ok(image_id)
     }
