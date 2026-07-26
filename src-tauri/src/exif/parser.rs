@@ -199,9 +199,13 @@ impl ExifParser {
 
     /// Fallback: uses exiftool CLI if available on the system.
     fn parse_with_exiftool(&self, path: &str) -> Result<ExifData> {
+        let start = std::time::Instant::now();
+        log::info!("[EXIF] Falling back to exiftool for: {}", path);
         let output = std::process::Command::new("exiftool")
             .args(["-json", path])
             .output()?;
+        let elapsed = start.elapsed();
+        log::info!("[EXIF] exiftool completed in {:.2}s for: {}", elapsed.as_secs_f64(), path);
 
         if !output.status.success() {
             return Err(anyhow::anyhow!("exiftool failed"));
